@@ -1,5 +1,6 @@
 import os
 import random
+import asyncio
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -47,22 +48,19 @@ def fmt_price(n: float) -> str:
 # ── Analysis engine ───────────────────────────────────────────────────────────
 def analyze(ticker: str, tf: str, price: float, chg: float, hi: float, lo: float) -> dict:
     sym = ticker.replace("USDT", "")
-
     mom = max(-1, min(1, (chg / 100) * 4 + random.uniform(-0.2, 0.2)))
     rsi = (random.uniform(60, 74) if chg > 6
            else random.uniform(26, 40) if chg < -6
            else random.uniform(38, 62))
     rsi_lbl = "Oversold 🟢" if rsi < 35 else "Overbought 🔴" if rsi > 65 else "Neutral ⚪"
-
     macd_bull = mom > 0.05
     macd = "Bullish crossover 📈" if macd_bull else ("Bearish crossover 📉" if mom < -0.05 else "Neutral ➡️")
     ema = ("Above EMA20/50 — Bullish 🟢" if mom > 0.2
            else "Below EMA20/50 — Bearish 🔴" if mom < -0.2
            else "Between EMA20–EMA50 ↔️")
-
     score = (1 if rsi < 40 else -1 if rsi > 60 else 0) + (1.2 if macd_bull else -1.2) + mom * 2
-    if score > 0.8:    sig, trend, conf = "BUY", "Bullish",  random.randint(62, 84)
-    elif score < -0.8: sig, trend, conf = "SELL", "Bearish", random.randint(60, 80)
+    if score > 0.8:    sig, trend, conf = "BUY",  "Bullish",  random.randint(62, 84)
+    elif score < -0.8: sig, trend, conf = "SELL", "Bearish",  random.randint(60, 80)
     else:              sig, trend, conf = "HOLD", "Sideways", random.randint(48, 65)
 
     rng = hi - lo or price * 0.04
@@ -73,9 +71,9 @@ def analyze(ticker: str, tf: str, price: float, chg: float, hi: float, lo: float
     tgt = (price + rng * random.uniform(0.3, 0.65) if sig == "BUY"
            else price - rng * random.uniform(0.3, 0.65) if sig == "SELL"
            else price + rng * random.uniform(-0.1, 0.1))
-    sl  = (s1 * random.uniform(0.97, 0.99) if sig == "BUY"
-           else r1 * random.uniform(1.01, 1.03) if sig == "SELL"
-           else price * random.uniform(0.96, 0.98))
+    sl = (s1 * random.uniform(0.97, 0.99) if sig == "BUY"
+          else r1 * random.uniform(1.01, 1.03) if sig == "SELL"
+          else price * random.uniform(0.96, 0.98))
 
     abs_chg = abs(chg)
     risk_score = (random.randint(62, 82) if abs_chg > 8
@@ -83,7 +81,7 @@ def analyze(ticker: str, tf: str, price: float, chg: float, hi: float, lo: float
                   else random.randint(22, 42))
     risk = "🔴 High" if risk_score > 60 else "🟡 Medium" if risk_score > 40 else "🟢 Low"
 
-    bb = ("Volatility expanding 💥" if abs_chg > 5 else "Squeeze — breakout imminent ⚡")
+    bb = "Volatility expanding 💥" if abs_chg > 5 else "Squeeze — breakout imminent ⚡"
     fib382 = fmt_price(hi - (hi - lo) * 0.382)
     fib618 = fmt_price(hi - (hi - lo) * 0.618)
     sent = ("Greedy 😤 — be cautious" if chg > 5
@@ -114,16 +112,14 @@ def analyze(ticker: str, tf: str, price: float, chg: float, hi: float, lo: float
 def build_message(sym: str, tf: str, d: dict) -> str:
     sig_emoji = "🟢" if d["sig"] == "BUY" else "🔴" if d["sig"] == "SELL" else "🟡"
     name = COIN_NAMES.get(sym, sym)
-
     bar_filled = int(d["conf"] / 10)
     conf_bar = "█" * bar_filled + "░" * (10 - bar_filled)
 
-    msg = f"""
-╔══════════════════════════╗
+    return f"""╔══════════════════════════╗
   🤖 *Crypto AI Predictor*
 ╚══════════════════════════╝
 
-💰 *{name} ({sym})* · {tf}
+💰 *{name} \\({sym}\\)* · {tf}
 📊 Live Price: *{d['price']}*
 📈 24h Change: *{d['chg']}*
 
@@ -134,14 +130,14 @@ def build_message(sym: str, tf: str, d: dict) -> str:
 ━━━━━━━━━━━━━━━━━━━━━
 📌 *TRADE LEVELS*
 ━━━━━━━━━━━━━━━━━━━━━
-🎯 Target:   *{d['tgt']}*
+🎯 Target:    *{d['tgt']}*
 🛑 Stop Loss: *{d['sl']}*
 
 ━━━━━━━━━━━━━━━━━━━━━
 📐 *SUPPORT & RESISTANCE*
 ━━━━━━━━━━━━━━━━━━━━━
-🟢 S1: {d['s1']}  |  S2: {d['s2']}
-🔴 R1: {d['r1']}  |  R2: {d['r2']}
+🟢 S1: {d['s1']}  \\|  S2: {d['s2']}
+🔴 R1: {d['r1']}  \\|  R2: {d['r2']}
 
 ━━━━━━━━━━━━━━━━━━━━━
 📊 *INDICATORS*
@@ -150,137 +146,118 @@ RSI: *{d['rsi']}* — {d['rsi_lbl']}
 MACD: {d['macd']}
 EMA: {d['ema']}
 BB: {d['bb']}
-Fib 38.2%: {d['fib382']}  |  61.8%: {d['fib618']}
+Fib 38\\.2%: {d['fib382']}  \\|  61\\.8%: {d['fib618']}
 Sentiment: {d['sent']}
 
 ━━━━━━━━━━━━━━━━━━━━━
 ⚠️ *RISK*
 ━━━━━━━━━━━━━━━━━━━━━
-Level: {d['risk']} ({d['risk_score']}/100)
+Level: {d['risk']} \\({d['risk_score']}/100\\)
 Key Risk: _{d['key_risk']}_
 
 ━━━━━━━━━━━━━━━━━━━━━
-_⚡ Data: Binance · For educational use only_
-_Never invest more than you can afford to lose_
-"""
-    return msg.strip()
+_⚡ Data: Binance · Educational use only_
+_Never invest more than you can afford to lose_"""
 
-# ── Bot handlers ──────────────────────────────────────────────────────────────
+# ── Handlers ──────────────────────────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg = """
-👋 *Welcome to Crypto AI Predictor Bot!*
+    await update.message.reply_text("""👋 *Welcome to Crypto AI Predictor Bot\\!*
 
-I give you live trading signals using real Binance prices.
+I give you live trading signals using real Binance prices\\.
 
-*How to use me:*
+*How to use:*
 
-1️⃣ *Pick a coin:* Send `/analyze` to choose interactively
+1️⃣ `/analyze` — Pick any coin interactively
 
-2️⃣ *Quick commands for any coin:*
+2️⃣ Quick commands:
 `/btc` `/eth` `/sol` `/bnb` `/xrp`
 `/ada` `/doge` `/avax` `/link` `/matic`
 `/dot` `/arb` `/uni` `/ltc` `/atom`
 `/near` `/apt` `/op`
 
-3️⃣ *With timeframe:*
-`/sol 4H` or `/eth 1D` or `/btc 1W`
+3️⃣ With timeframe:
+`/sol 4H` · `/eth 1D` · `/btc 1W`
 
-*Available timeframes:* 1H · 4H · 1D · 1W
+*Timeframes:* 1H · 4H · 1D · 1W
 
-Type /help for more info.
-"""
-    await update.message.reply_text(msg, parse_mode="Markdown")
+Type /help for more info\.""", parse_mode="MarkdownV2")
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg = """
-📖 *Commands*
+    await update.message.reply_text("""📖 *Commands*
 
 /analyze — Interactive coin selector
 /btc, /eth, /sol etc — Quick analysis
 /sol 4H — Analysis with timeframe
-/coins — See all supported coins
+/coins — All supported coins
 /start — Welcome message
-
-*Timeframes:* 1H · 4H · 1D · 1W
 
 *What you get:*
 • Live price from Binance
 • BUY / SELL / HOLD signal
 • Confidence score
-• Target price & stop loss
+• Target & stop loss
 • Support & resistance levels
 • RSI, MACD, EMA, Bollinger, Fibonacci
-• Market sentiment
 • Risk assessment
 
-⚠️ _For educational purposes only._
-"""
-    await update.message.reply_text(msg, parse_mode="Markdown")
+⚠️ _For educational purposes only\\._""", parse_mode="MarkdownV2")
 
 async def coins_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = "\n".join([f"/{k.lower()} — {v}" for k, v in COIN_NAMES.items()])
-    await update.message.reply_text(f"*Supported Coins:*\n\n{lines}", parse_mode="Markdown")
+    await update.message.reply_text(f"*Supported Coins \\(18\\):*\n\n{lines}", parse_mode="MarkdownV2")
 
 async def analyze_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Show interactive coin selection keyboard"""
     keyboard = []
     row = []
     for i, sym in enumerate(COINS.keys()):
-        row.append(InlineKeyboardButton(sym, callback_data=f"coin:{sym}:4H"))
+        row.append(InlineKeyboardButton(sym, callback_data=f"coin:{sym}"))
         if len(row) == 4:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🪙 *Select a coin to analyze:*", parse_mode="Markdown", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "🪙 *Select a coin to analyze:*",
+        parse_mode="MarkdownV2",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def coin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Handle coin selection → show timeframe selection"""
     query = update.callback_query
     await query.answer()
-    _, sym, _ = query.data.split(":")
-
-    keyboard = [
-        [
-            InlineKeyboardButton("1H", callback_data=f"tf:{sym}:1H"),
-            InlineKeyboardButton("4H", callback_data=f"tf:{sym}:4H"),
-            InlineKeyboardButton("1D", callback_data=f"tf:{sym}:1D"),
-            InlineKeyboardButton("1W", callback_data=f"tf:{sym}:1W"),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    sym = query.data.split(":")[1]
+    keyboard = [[
+        InlineKeyboardButton("1H", callback_data=f"tf:{sym}:1H"),
+        InlineKeyboardButton("4H", callback_data=f"tf:{sym}:4H"),
+        InlineKeyboardButton("1D", callback_data=f"tf:{sym}:1D"),
+        InlineKeyboardButton("1W", callback_data=f"tf:{sym}:1W"),
+    ]]
     await query.edit_message_text(
-        f"✅ *{COIN_NAMES.get(sym, sym)} ({sym})* selected\n\n⏱ *Choose timeframe:*",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
+        f"✅ *{COIN_NAMES.get(sym, sym)} \\({sym}\\)* selected\n\n⏱ *Choose timeframe:*",
+        parse_mode="MarkdownV2",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def tf_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Handle timeframe selection → run analysis"""
     query = update.callback_query
     await query.answer()
     _, sym, tf = query.data.split(":")
-
-    await query.edit_message_text(f"⏳ Fetching live *{sym}* data from Binance…", parse_mode="Markdown")
-
+    await query.edit_message_text(f"⏳ Fetching live *{sym}* data from Binance…", parse_mode="MarkdownV2")
     try:
         data = get_price(COINS[sym])
         price = float(data["lastPrice"])
         chg   = float(data["priceChangePercent"])
         hi    = float(data["highPrice"])
         lo    = float(data["lowPrice"])
-
         d = analyze(sym, tf, price, chg, hi, lo)
         msg = build_message(sym, tf, d)
-
-        # Add refresh button
-        keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"tf:{sym}:{tf}"),
-                     InlineKeyboardButton("🪙 New Coin", callback_data=f"newcoin:x:x")]]
-        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
+        keyboard = [[
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"tf:{sym}:{tf}"),
+            InlineKeyboardButton("🪙 New Coin", callback_data="newcoin"),
+        ]]
+        await query.edit_message_text(msg, parse_mode="MarkdownV2", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
-        await query.edit_message_text(f"❌ Error fetching price: {e}\n\nPlease try again.")
+        await query.edit_message_text(f"❌ Error: {e}\n\nPlease try again.")
 
 async def newcoin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -288,50 +265,42 @@ async def newcoin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     row = []
     for i, sym in enumerate(COINS.keys()):
-        row.append(InlineKeyboardButton(sym, callback_data=f"coin:{sym}:4H"))
+        row.append(InlineKeyboardButton(sym, callback_data=f"coin:{sym}"))
         if len(row) == 4:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
-    await query.edit_message_text("🪙 *Select a coin to analyze:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(
+        "🪙 *Select a coin to analyze:*",
+        parse_mode="MarkdownV2",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-async def quick_coin(update: Update, ctx: ContextTypes.DEFAULT_TYPE, sym: str):
-    """Handle /btc, /sol etc. commands with optional timeframe arg"""
-    args = ctx.args
-    tf = "4H"
-    if args:
-        tf_arg = args[0].upper()
-        if tf_arg in TIMEFRAMES:
-            tf = tf_arg
-
-    if sym not in COINS:
-        await update.message.reply_text(f"❌ Unknown coin: {sym}\n\nUse /coins to see all supported coins.")
-        return
-
-    msg = await update.message.reply_text(f"⏳ Fetching live *{sym}* data from Binance…", parse_mode="Markdown")
-
+async def run_analysis(update: Update, sym: str, tf: str):
+    msg = await update.message.reply_text(f"⏳ Fetching live *{sym}* data from Binance…", parse_mode="MarkdownV2")
     try:
         data = get_price(COINS[sym])
         price = float(data["lastPrice"])
         chg   = float(data["priceChangePercent"])
         hi    = float(data["highPrice"])
         lo    = float(data["lowPrice"])
-
         d = analyze(sym, tf, price, chg, hi, lo)
         result = build_message(sym, tf, d)
-
-        keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data=f"tf:{sym}:{tf}"),
-                     InlineKeyboardButton("🪙 New Coin", callback_data=f"newcoin:x:x")]]
-        await msg.edit_text(result, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
-
+        keyboard = [[
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"tf:{sym}:{tf}"),
+            InlineKeyboardButton("🪙 New Coin", callback_data="newcoin"),
+        ]]
+        await msg.edit_text(result, parse_mode="MarkdownV2", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
         await msg.edit_text(f"❌ Could not fetch price for {sym}.\n\nError: {e}")
 
-# Register quick commands for each coin
 def make_handler(sym):
     async def handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        await quick_coin(update, ctx, sym)
+        tf = "4H"
+        if ctx.args and ctx.args[0].upper() in TIMEFRAMES:
+            tf = ctx.args[0].upper()
+        await run_analysis(update, sym, tf)
     handler.__name__ = f"cmd_{sym.lower()}"
     return handler
 
@@ -341,15 +310,15 @@ async def unknown(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sym = parts[0]
     if sym in COINS:
         tf = parts[1] if len(parts) > 1 and parts[1] in TIMEFRAMES else "4H"
-        ctx.args = [tf]
-        await quick_coin(update, ctx, sym)
+        await run_analysis(update, sym, tf)
     else:
-        await update.message.reply_text(
-            "❓ I don't understand that command.\n\nUse /analyze to pick a coin or type /help.",
-        )
+        await update.message.reply_text("❓ Unknown command\\. Use /analyze to pick a coin or /help for commands\\.", parse_mode="MarkdownV2")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN environment variable is not set!")
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -357,16 +326,12 @@ def main():
     app.add_handler(CommandHandler("coins", coins_cmd))
     app.add_handler(CommandHandler("analyze", analyze_cmd))
 
-    # Quick coin commands
     for sym in COINS:
         app.add_handler(CommandHandler(sym.lower(), make_handler(sym)))
 
-    # Callbacks
-    app.add_handler(CallbackQueryHandler(coin_callback,    pattern=r"^coin:"))
-    app.add_handler(CallbackQueryHandler(tf_callback,      pattern=r"^tf:"))
-    app.add_handler(CallbackQueryHandler(newcoin_callback, pattern=r"^newcoin:"))
-
-    # Fallback
+    app.add_handler(CallbackQueryHandler(coin_callback,   pattern=r"^coin:"))
+    app.add_handler(CallbackQueryHandler(tf_callback,     pattern=r"^tf:"))
+    app.add_handler(CallbackQueryHandler(newcoin_callback, pattern=r"^newcoin$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown))
 
     print("🤖 Bot is running...")
